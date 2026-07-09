@@ -1,7 +1,7 @@
 # Retrieval Augmented Generation Engine
 # Incorporates FAISS vector indices, Sentence Transformers, and robust ingestion methods.
 
-import os
+
 import io
 import re
 import urllib.request
