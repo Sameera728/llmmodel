@@ -1,0 +1,127 @@
+import React, { useState } from "react";
+import { MessageSquare, FileCode, Database, Cpu, Activity, Sparkles, Bell, X } from "lucide-react";
+import ChatSandbox from "./components/ChatSandbox";
+import CodeBrowser from "./components/CodeBrowser";
+import DatasetRAG from "./components/DatasetRAG";
+import TrainingPanel from "./components/TrainingPanel";
+import MetricsDashboard from "./components/MetricsDashboard";
+
+type ActiveTab = "chat" | "code" | "rag" | "train" | "dashboard";
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
+  const [notification, setNotification] = useState<string | null>(null);
+
+  const triggerNotification = (message: string) => {
+    setNotification(message);
+    setTimeout(() => {
+      setNotification(null);
+    }, 4000);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans select-none overflow-x-hidden antialiased">
+      {/* Dynamic Toast Notification */}
+      {notification && (
+        <div className="fixed top-5 right-5 z-50 flex items-center gap-3 bg-[#0c0c0e]/95 backdrop-blur-md border border-blue-500/30 text-blue-400 px-4 py-3 rounded-xl shadow-2xl animate-in fade-in slide-in-from-top-4 duration-350">
+          <Bell size={16} className="text-blue-500 shrink-0" />
+          <span className="text-xs font-semibold font-mono">{notification}</span>
+          <button
+            onClick={() => setNotification(null)}
+            className="text-zinc-500 hover:text-zinc-300 ml-2 cursor-pointer"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Main Header / Navigation rail */}
+      <header className="sticky top-0 z-40 bg-[#09090b]/80 backdrop-blur-lg border-b border-zinc-800/80 px-6 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-500 p-[1.5px] shadow-lg shadow-blue-500/10">
+            <div className="w-full h-full bg-[#09090b] rounded-[10px] flex items-center justify-center">
+              <Sparkles className="text-blue-400 fill-blue-500/10" size={18} />
+            </div>
+          </div>
+          <div>
+            <h1 className="text-sm font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+              GPT Forge <span className="text-[10px] bg-zinc-900 border border-zinc-800 text-blue-400 font-mono px-2 py-0.5 rounded-full">v1.2</span>
+            </h1>
+            <p className="text-[10px] text-zinc-500 mt-0.5 font-mono">
+              Open-Source GPT-Style LLM Project Workspace
+            </p>
+          </div>
+        </div>
+
+        {/* Tab triggers */}
+        <nav className="flex flex-wrap bg-[#0c0c0e] border border-zinc-800/80 p-1 rounded-xl">
+          <button
+            onClick={() => setActiveTab("chat")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeTab === "chat"
+                ? "bg-blue-600 text-white font-semibold shadow-md shadow-blue-500/10"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <MessageSquare size={14} /> Sandbox
+          </button>
+          <button
+            onClick={() => setActiveTab("code")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeTab === "code"
+                ? "bg-blue-600 text-white font-semibold shadow-md shadow-blue-500/10"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <FileCode size={14} /> Code Browser
+          </button>
+          <button
+            onClick={() => setActiveTab("rag")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeTab === "rag"
+                ? "bg-blue-600 text-white font-semibold shadow-md shadow-blue-500/10"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <Database size={14} /> Ingest RAG
+          </button>
+          <button
+            onClick={() => setActiveTab("train")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeTab === "train"
+                ? "bg-blue-600 text-white font-semibold shadow-md shadow-blue-500/10"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <Cpu size={14} /> Fine-Tuning
+          </button>
+          <button
+            onClick={() => setActiveTab("dashboard")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeTab === "dashboard"
+                ? "bg-blue-600 text-white font-semibold shadow-md shadow-blue-500/10"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <Activity size={14} /> Dashboard
+          </button>
+        </nav>
+      </header>
+
+      {/* Main View Area */}
+      <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
+        {activeTab === "chat" && <ChatSandbox onNotify={triggerNotification} />}
+        {activeTab === "code" && <CodeBrowser onCopyNotice={triggerNotification} />}
+        {activeTab === "rag" && <DatasetRAG onNotify={triggerNotification} />}
+        {activeTab === "train" && <TrainingPanel onNotify={triggerNotification} />}
+        {activeTab === "dashboard" && <MetricsDashboard />}
+      </main>
+
+      {/* Footer */}
+      <footer className="py-4 border-t border-zinc-900 bg-[#0c0c0e] text-center text-[10px] text-zinc-600 font-mono flex flex-col sm:flex-row justify-between items-center px-6 gap-2 shrink-0">
+        <span>&copy; 2026 GPT Forge Orchestration Engines. Licensed under Apache 2.0.</span>
+        <span>Environment Status: <span className="text-emerald-400 font-semibold">Active Development Container</span></span>
+      </footer>
+    </div>
+  );
+}

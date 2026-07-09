@@ -1,0 +1,102 @@
+# Database Management Layer
+# Employs SQLite via SQLAlchemy for lightweight development storage of histories and token metrics.
+
+import datetime
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Float
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+
+DATABASE_URL = "sqlite:///./datasets/open_gpt_llm.db"
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# --- Database Schemas ---
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(100), nullable=False)
+    role = Column(String(20), default="user") # 'user' or 'admin'
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    sessions = relationship("ConversationSession", back_populates="user", cascade="all, delete-orphan")
+
+class ConversationSession(Base):
+    __tablename__ = "conversation_sessions"
+    
+    id = Column(String(50), primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    title = Column(String(200), default="New Conversation")
+    system_prompt = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    user = relationship("User", back_populates="sessions")
+    messages = relationship("MessageLog", back_populates="session", cascade="all, delete-orphan")
+
+class MessageLog(Base):
+    __tablename__ = "message_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(50), ForeignKey("conversation_sessions.id"), nullable=False)
+    role = Column(String(20), nullable=False) # 'user' or 'assistant' or 'system'
+    content = Column(Text, nullable=False)
+    model_used = Column(String(50), nullable=True)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    session = relationship("ConversationSession", back_populates="messages")
+
+class TokenUsageLog(Base):
+    __tablename__ = "token_usage_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    session_id = Column(String(50), nullable=True)
+    model_name = Column(String(50), nullable=False)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    estimated_cost = Column(Float, default=0.0)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+# --- Helper Utilities ---
+
+def init_db():
+    import os
+    # Ensure dataset directory exists
+    os.makedirs("./datasets", exist_ok=True)
+    Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Example seeding utility
+def seed_admin_user(db_session):
+    admin = db_session.query(User).filter(User.username == "admin").first()
+    if not admin:
+        # Simple placeholder hash for open-source illustration
+        # In actual deployment, use passlib.context.CryptContext (bcrypt)
+        admin = User(
+            username="admin", 
+            hashed_password="pbkdf2:sha256:600000$admin_salt$pbkdf2_hash_value", 
+            role="admin"
+        )
+        db_session.add(admin)
+        db_session.commit()
+        db_session.refresh(admin)
+        print("Initial Admin user successfully seeded.")
+
+if __name__ == "__main__":
+    print("Initializing Database structure...")
+    init_db()
+    session = SessionLocal()
+    seed_admin_user(session)
+    session.close()
+    print("Database ready.")

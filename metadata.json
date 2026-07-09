@@ -1,0 +1,551 @@
+import React, { useState, useEffect, useRef } from "react";
+import { Send, Cpu, Trash2, Sliders, RefreshCw, Sparkles, MessageSquare, Flame } from "lucide-react";
+import { Message, Model } from "../types";
+
+interface ChatSandboxProps {
+  onNotify: (msg: string) => void;
+}
+
+export default function ChatSandbox({ onNotify }: ChatSandboxProps) {
+  const [models, setModels] = useState<Model[]>([]);
+  const [activeModelId, setActiveModelId] = useState<string>("qwen-2.5");
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      role: "system",
+      content: "You are a professional, helpful assistant loaded with local fine-tuning context.",
+      timestamp: new Date().toLocaleTimeString(),
+    },
+    {
+      role: "assistant",
+      content: "Hi! I am the active open-source model currently loaded in the GPU sandbox memory. Feel free to chat with me, test coding capabilities, or query the ingested document knowledge bases. I am proxying calls server-side securely.",
+      timestamp: new Date().toLocaleTimeString(),
+    },
+  ]);
+  const [inputValue, setInputValue] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  
+  // Model Settings
+  const [temperature, setTemperature] = useState(0.7);
+  const [systemPrompt, setSystemPrompt] = useState("You are an expert machine learning assistant.");
+  const [showConfig, setShowConfig] = useState(false);
+
+  // Performance stats for the last generation
+  const [lastStats, setLastStats] = useState<{
+    tokens: number;
+    latencyMs: number;
+    throughput: number;
+  } | null>(null);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    fetchModels();
+  }, []);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const fetchModels = async () => {
+    try {
+      const res = await fetch("/api/models");
+      const data = await res.json();
+      if (data.supported_models) {
+        setModels(data.supported_models);
+        const active = data.supported_models.find((m: Model) => m.loaded);
+        if (active) setActiveModelId(active.id);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSwitchModel = async (id: string) => {
+    try {
+      const res = await fetch("/api/models/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_name: id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setActiveModelId(id);
+        onNotify(`Switched baseline context to ${id.toUpperCase()}`);
+        
+        // Add local helper message
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "system",
+            content: `Model switched context to ${id.toUpperCase()}. Hot-plugging model parameters complete.`,
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ]);
+      }
+    } catch (e) {
+      onNotify("Failed to switch model");
+    }
+  };
+
+  const handleSend = async () => {
+    if (!inputValue.trim() || isGenerating) return;
+
+    const userMessage: Message = {
+      role: "user",
+      content: inputValue,
+      timestamp: new Date().toLocaleTimeString(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setInputValue("");
+    setIsGenerating(true);
+
+    const start = performance.now();
+    const assistantMessagePlaceholder: Message = {
+      role: "assistant",
+      content: "",
+      timestamp: new Date().toLocaleTimeString(),
+      isStreaming: true,
+    };
+
+    setMessages((prev) => [...prev, assistantMessagePlaceholder]);
+
+    try {
+      // Build conversation array including user message and system instruction
+      const payloadMessages = [
+        { role: "system", content: systemPrompt },
+        ...messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })),
+        { role: "user", content: userMessage.content }
+      ];
+
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: payloadMessages,
+          stream: true,
+          temperature: temperature,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to receive stream response");
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let finished = false;
+      let fullContent = "";
+
+      if (!reader) {
+        throw new Error("Decoder read buffer is empty");
+      }
+
+      while (!finished) {
+        const { value, done } = await reader.read();
+        finished = done;
+        if (value) {
+          const chunkStr = decoder.decode(value, { stream: !done });
+          const lines = chunkStr.split("\n");
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6).trim();
+              if (dataStr === "[DONE]") {
+                finished = true;
+                break;
+              }
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.text) {
+                  fullContent += parsed.text;
+                  setMessages((prev) => {
+                    const next = [...prev];
+                    const last = next[next.length - 1];
+                    if (last && last.role === "assistant" && last.isStreaming) {
+                      last.content = fullContent;
+                    }
+                    return next;
+                  });
+                }
+              } catch (err) {
+                // Ignore parsing fragments
+              }
+            }
+          }
+        }
+      }
+
+      // Finalize performance metric calculations
+      const end = performance.now();
+      const latency = Math.round(end - start);
+      const estimatedTokens = Math.round(fullContent.length / 4.1);
+      const throughput = parseFloat(((estimatedTokens / (latency / 1000)) || 0).toFixed(1));
+
+      setLastStats({
+        tokens: estimatedTokens,
+        latencyMs: latency,
+        throughput,
+      });
+
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last) {
+          last.isStreaming = false;
+        }
+        return next;
+      });
+
+    } catch (error: any) {
+      console.error(error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `⚠️ Connection Error: Failed to retrieve inference stream. Ensure your GEMINI_API_KEY is configured in the bvtechai Secrets panel. Error: ${error.message}`,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ]);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleClear = () => {
+    setMessages([
+      {
+        role: "system",
+        content: systemPrompt,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+      {
+        role: "assistant",
+        content: `Hi! History wiped clean. Let's start a fresh discussion using model ${activeModelId.toUpperCase()}.`,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ]);
+    setLastStats(null);
+  };
+
+  const activeModelDetails = models.find((m) => m.id === activeModelId);
+
+  // Simple Markdown syntax renderer
+  const formatText = (text: string) => {
+    if (!text) return "";
+    
+    // Quick checks for paragraphs, bold markers, list items, and code highlights
+    const lines = text.split("\n");
+    let inCodeBlock = false;
+    let codeContent: string[] = [];
+
+    return lines.map((line, idx) => {
+      // Handle Code Block fence
+      if (line.trim().startsWith("```")) {
+        if (inCodeBlock) {
+          inCodeBlock = false;
+          const block = codeContent.join("\n");
+          codeContent = [];
+          return (
+            <div key={idx} className="my-3 bg-slate-950 rounded-lg overflow-hidden border border-slate-800 font-mono text-xs shadow-inner">
+              <div className="flex justify-between items-center px-4 py-1.5 bg-slate-900 border-b border-slate-800 text-slate-500 text-[10px]">
+                <span>Generated Code</span>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(block);
+                    onNotify("Copied code block!");
+                  }}
+                  className="hover:text-slate-300"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="p-3 text-emerald-400 overflow-x-auto whitespace-pre">
+                <code>{block}</code>
+              </pre>
+            </div>
+          );
+        } else {
+          inCodeBlock = true;
+          return null;
+        }
+      }
+
+      if (inCodeBlock) {
+        codeContent.push(line);
+        return null;
+      }
+
+      // Bold formatter
+      let renderedLine = line;
+      const boldRegex = /\*\*(.*?)\*\*/g;
+      const parts: React.ReactNode[] = [];
+      let lastIndex = 0;
+      let match;
+      
+      while ((match = boldRegex.exec(line)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(line.substring(lastIndex, match.index));
+        }
+        parts.push(<strong key={match.index} className="text-blue-400 font-semibold">{match[1]}</strong>);
+        lastIndex = boldRegex.lastIndex;
+      }
+      
+      if (lastIndex < line.length) {
+        parts.push(line.substring(lastIndex));
+      }
+
+      // Inline code highlights
+      const lineNode = parts.length > 0 ? parts : line;
+
+      // Unordered lists
+      if (line.trim().startsWith("- ") || line.trim().startsWith("* ")) {
+        return (
+          <li key={idx} className="ml-4 list-disc text-zinc-300 py-0.5 leading-relaxed">
+            {line.trim().substring(2)}
+          </li>
+        );
+      }
+
+      // Title headings
+      if (line.trim().startsWith("### ")) {
+        return (
+          <h4 key={idx} className="text-sm font-semibold text-zinc-100 mt-4 mb-2">
+            {line.trim().substring(4)}
+          </h4>
+        );
+      }
+
+      return (
+        <p key={idx} className="text-zinc-300 leading-relaxed min-h-[1.2rem] py-0.5">
+          {lineNode}
+        </p>
+      );
+    });
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[650px] overflow-hidden items-stretch">
+      {/* Parameters Panel */}
+      <div className="lg:col-span-1 bg-zinc-900/40 backdrop-blur-md rounded-xl border border-zinc-800 p-4 flex flex-col h-full overflow-y-auto custom-scrollbar gap-4">
+        <div>
+          <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2.5">
+            Model Pipeline Select
+          </h3>
+          <div className="space-y-2">
+            {models.map((model) => (
+              <button
+                key={model.id}
+                onClick={() => handleSwitchModel(model.id)}
+                className={`w-full text-left p-3 rounded-lg border transition-all ${
+                  activeModelId === model.id
+                    ? "bg-blue-600/10 border-blue-500/30 text-blue-400 font-medium"
+                    : "bg-[#09090b]/45 border-zinc-800/50 text-zinc-300 hover:border-zinc-700/80"
+                }`}
+              >
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold">{model.name}</span>
+                  {activeModelId === model.id && (
+                    <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse"></span>
+                  )}
+                </div>
+                <div className="flex justify-between text-[10px] text-zinc-500 mt-1 font-mono">
+                  <span>{model.size}</span>
+                  <span>Context: {model.context}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-zinc-800 pt-4">
+          <div className="flex justify-between items-center mb-2.5">
+            <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+              Hyperparameters
+            </h3>
+            <Sliders size={12} className="text-zinc-500" />
+          </div>
+
+          <div className="space-y-4 text-xs">
+            {/* Temperature slider */}
+            <div>
+              <div className="flex justify-between text-[11px] text-zinc-400 mb-1.5">
+                <span className="flex items-center gap-1"><Flame size={12} className="text-blue-500" /> Temperature</span>
+                <span className="font-mono text-blue-400 font-bold">{temperature}</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={temperature}
+                onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                className="w-full accent-blue-500 bg-[#09090b] rounded-lg cursor-pointer h-1.5"
+              />
+              <div className="flex justify-between text-[9px] text-zinc-600 font-mono mt-1">
+                <span>Deterministic (0.0)</span>
+                <span>Creative (1.0)</span>
+              </div>
+            </div>
+
+            {/* System Prompt overrides */}
+            <div>
+              <label className="block text-[11px] text-zinc-400 mb-1.5">System Prompt Override</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={4}
+                className="w-full bg-[#09090b] text-zinc-300 border border-zinc-800 rounded-lg p-2 focus:border-blue-500/50 outline-none text-[11px] font-mono leading-relaxed resize-none"
+                placeholder="Override the primary model behavior..."
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Real-time generation stats */}
+        {lastStats && (
+          <div className="border-t border-zinc-800 pt-4 mt-auto">
+            <h3 className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">
+              Hardware Execution Stats
+            </h3>
+            <div className="bg-[#09090b]/80 rounded-lg border border-zinc-800/60 p-3 space-y-2 font-mono text-[10px]">
+              <div className="flex justify-between text-zinc-400">
+                <span>Response Size:</span>
+                <span className="text-blue-400 font-bold">{lastStats.tokens} tokens</span>
+              </div>
+              <div className="flex justify-between text-zinc-400">
+                <span>Time To End:</span>
+                <span className="text-zinc-300 font-bold">{lastStats.latencyMs} ms</span>
+              </div>
+              <div className="flex justify-between text-zinc-400">
+                <span>Throughput:</span>
+                <span className="text-emerald-400 font-bold">{lastStats.throughput} tok/sec</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Main Chat Sandbox */}
+      <div className="lg:col-span-3 bg-[#09090b]/85 rounded-xl border border-zinc-800 flex flex-col h-full overflow-hidden relative shadow-2xl">
+        {/* Sandbox Header */}
+        <div className="flex items-center justify-between px-4 py-3 bg-zinc-900/20 border-b border-zinc-800">
+          <div className="flex items-center gap-2">
+            <Cpu size={16} className="text-blue-500 shrink-0" />
+            <div>
+              <span className="text-xs font-semibold text-zinc-100 flex items-center gap-1.5">
+                Active Inference Core: <span className="font-mono text-blue-400">{activeModelId.toUpperCase()}</span>
+              </span>
+              <p className="text-[10px] text-zinc-500 font-mono mt-0.5">
+                {activeModelDetails?.size} | Context Limit: {activeModelDetails?.context}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleClear}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 border border-zinc-800/80 rounded-md transition-all"
+              title="Wipe conversation history"
+            >
+              <Trash2 size={12} /> Clear History
+            </button>
+          </div>
+        </div>
+
+        {/* Message streams area */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar bg-gradient-to-b from-[#09090b]/90 to-[#09090b]/10">
+          {messages.map((msg, index) => {
+            const isSystem = msg.role === "system";
+            const isUser = msg.role === "user";
+
+            if (isSystem) {
+              return (
+                <div key={index} className="flex justify-center my-1">
+                  <span className="px-3 py-1 bg-zinc-900/80 border border-zinc-800 rounded-full text-[10px] font-mono text-zinc-400 flex items-center gap-1.5 shadow-sm">
+                    <Sparkles size={11} className="text-blue-400" />
+                    {msg.content}
+                  </span>
+                </div>
+              );
+            }
+
+            return (
+              <div
+                key={index}
+                className={`flex gap-3 max-w-[85%] ${
+                  isUser ? "ml-auto flex-row-reverse" : "mr-auto"
+                }`}
+              >
+                {/* Avatar icon */}
+                <div
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold border shadow-sm ${
+                    isUser
+                      ? "bg-blue-600/10 border-blue-500/30 text-blue-400"
+                      : "bg-[#09090b] border-zinc-800 text-zinc-300"
+                  }`}
+                >
+                  {isUser ? "U" : <MessageSquare size={13} />}
+                </div>
+
+                {/* Message bubble */}
+                <div className="flex flex-col gap-1">
+                  <div
+                    className={`rounded-xl px-3.5 py-2.5 text-xs shadow-md border ${
+                      isUser
+                        ? "bg-blue-600/10 border-blue-500/20 text-zinc-100"
+                        : "bg-zinc-900/40 border-zinc-800/50 text-zinc-100"
+                    }`}
+                  >
+                    {isUser ? <p className="leading-relaxed select-text">{msg.content}</p> : formatText(msg.content)}
+                    {msg.isStreaming && (
+                      <span className="inline-flex items-center gap-1 ml-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce"></span>
+                        <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce delay-150"></span>
+                        <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce delay-300"></span>
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[9px] text-zinc-500 self-end px-1 font-mono">
+                    {msg.timestamp}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Input box form */}
+        <div className="p-3 bg-zinc-900/40 border-t border-zinc-800">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSend();
+            }}
+            className="flex gap-2 bg-[#09090b] border border-zinc-800/50 rounded-xl p-1.5 focus-within:border-blue-500/50 transition-colors shadow-lg"
+          >
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder={`Send message to ${activeModelId.toUpperCase()} instruction pipeline...`}
+              disabled={isGenerating}
+              className="flex-1 bg-transparent text-xs text-zinc-200 px-3 outline-none disabled:text-zinc-500"
+            />
+            <button
+              type="submit"
+              disabled={!inputValue.trim() || isGenerating}
+              className="bg-blue-600 text-white hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-500 p-2 rounded-lg transition-all shrink-0 cursor-pointer shadow-md"
+            >
+              {isGenerating ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
+            </button>
+          </form>
+          <div className="flex justify-between items-center px-2 mt-2 text-[10px] text-zinc-500 font-mono">
+            <span>Server mode: <span className="text-blue-400">Active</span></span>
+            <span>GPU Precision: <span className="text-emerald-400">BF16</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

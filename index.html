@@ -1,0 +1,208 @@
+import React, { useEffect, useState } from "react";
+import { Folder, File, Code, Copy, Check, Download, Info, FileCode } from "lucide-react";
+import { FileNode } from "../types";
+
+interface CodeBrowserProps {
+  onCopyNotice: (msg: string) => void;
+}
+
+export default function CodeBrowser({ onCopyNotice }: CodeBrowserProps) {
+  const [fileTree, setFileTree] = useState<FileNode[]>([]);
+  const [selectedPath, setSelectedPath] = useState<string>("configs/config.yaml");
+  const [selectedContent, setSelectedContent] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({
+    configs: true,
+    backend: true,
+    training: true,
+    docker: true,
+    docs: true,
+  });
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    fetchFileTree();
+  }, []);
+
+  useEffect(() => {
+    if (selectedPath) {
+      loadFileContent(selectedPath);
+    }
+  }, [selectedPath]);
+
+  const fetchFileTree = async () => {
+    try {
+      const res = await fetch("/api/files");
+      const data = await res.json();
+      if (data.success) {
+        setFileTree(data.tree);
+      }
+    } catch (e) {
+      console.error("Failed to load file tree", e);
+    }
+  };
+
+  const loadFileContent = async (filePath: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/files/content?path=${encodeURIComponent(filePath)}`);
+      const data = await res.json();
+      if (data.success) {
+        setSelectedContent(data.content);
+      } else {
+        setSelectedContent(`# Error loading file content: ${data.error}`);
+      }
+    } catch (e) {
+      setSelectedContent("# Connection failed with codebase API server.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(selectedContent);
+    setCopied(true);
+    onCopyNotice("Source code copied to clipboard!");
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const toggleDirectory = (dirName: string) => {
+    setExpandedDirs((prev) => ({
+      ...prev,
+      [dirName]: !prev[dirName],
+    }));
+  };
+
+  const renderTree = (nodes: FileNode[], depth = 0) => {
+    return nodes.map((node) => {
+      const isDir = node.type === "directory";
+      const isExpanded = expandedDirs[node.name] || false;
+      const isSelected = selectedPath === node.path;
+
+      return (
+        <div key={node.path} className="select-none">
+          <div
+            onClick={() => {
+              if (isDir) {
+                toggleDirectory(node.name);
+              } else {
+                setSelectedPath(node.path);
+              }
+            }}
+            style={{ paddingLeft: `${depth * 12 + 6}px` }}
+            className={`flex items-center gap-2 py-1.5 px-2 rounded-md cursor-pointer transition-colors text-xs ${
+              isSelected
+                ? "bg-blue-600/15 text-blue-400 font-medium"
+                : "text-zinc-300 hover:bg-zinc-800/60"
+            }`}
+          >
+            {isDir ? (
+              <Folder
+                size={14}
+                className={isExpanded ? "text-blue-400 fill-blue-500/10" : "text-zinc-400"}
+              />
+            ) : (
+              <File size={14} className={isSelected ? "text-blue-400" : "text-zinc-400"} />
+            )}
+            <span className="truncate">{node.name}</span>
+          </div>
+
+          {isDir && isExpanded && node.children && (
+            <div className="border-l border-slate-800 ml-3.5 pl-1.5">
+              {renderTree(node.children, depth + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
+  };
+
+  const getLanguageFromPath = (path: string) => {
+    if (path.endsWith(".py")) return "Python";
+    if (path.endsWith(".yaml") || path.endsWith(".yml")) return "YAML";
+    if (path.endsWith(".md")) return "Markdown";
+    if (path.endsWith("Dockerfile")) return "Dockerfile";
+    return "Code";
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-stretch">
+      {/* File Navigator */}
+      <div className="lg:col-span-1 bg-zinc-900/40 backdrop-blur-md rounded-xl border border-zinc-800 p-4 flex flex-col h-[650px]">
+        <div className="flex items-center gap-2 pb-3 mb-3 border-b border-zinc-800">
+          <FileCode size={16} className="text-blue-500" />
+          <h3 className="text-sm font-semibold text-zinc-100">Project Workspace</h3>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+          {fileTree.length > 0 ? (
+            renderTree(fileTree)
+          ) : (
+            <div className="flex items-center justify-center h-full text-zinc-500 text-xs">
+              Loading workspace files...
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 p-3 bg-[#0c0c0e] rounded-lg border border-zinc-800/80">
+          <div className="flex gap-2 items-start text-[11px] text-zinc-400">
+            <Info size={14} className="text-blue-500 shrink-0 mt-0.5" />
+            <p>
+              These files are physically generated in your container workspace. Export the workspace via the bvtechai Settings menu to deploy them onto your GPU cluster.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Code Viewer */}
+      <div className="lg:col-span-3 bg-[#09090b]/85 rounded-xl border border-zinc-800 flex flex-col h-[650px] overflow-hidden shadow-2xl relative">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-900/20 border-b border-zinc-800">
+          <div className="flex items-center gap-3">
+            <div className="flex gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500/80"></span>
+              <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></span>
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500/80"></span>
+            </div>
+            <div className="h-4 w-[1px] bg-zinc-800 mx-1"></div>
+            <span className="text-xs font-mono text-zinc-400 select-all">{selectedPath}</span>
+            <span className="px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700/60 text-[10px] text-zinc-300 font-mono">
+              {getLanguageFromPath(selectedPath)}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              className="p-1.5 rounded-md hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-all"
+              title="Copy source code"
+            >
+              {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto p-4 font-mono text-xs text-zinc-300 bg-[#09090b]/95 custom-scrollbar select-text leading-relaxed">
+          {loading ? (
+            <div className="flex items-center justify-center h-full gap-2 text-zinc-400">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+              Loading code buffer...
+            </div>
+          ) : (
+            <pre className="whitespace-pre overflow-x-auto">
+              <code>
+                {selectedContent.split("\n").map((line, idx) => (
+                  <div key={idx} className="table-row hover:bg-zinc-900/20">
+                    <span className="table-cell text-zinc-600 pr-4 text-right select-none w-8 border-r border-zinc-800 mr-4">
+                      {idx + 1}
+                    </span>
+                    <span className="table-cell pl-4 select-text">{line}</span>
+                  </div>
+                ))}
+              </code>
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
